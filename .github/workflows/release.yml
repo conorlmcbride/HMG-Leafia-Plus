@@ -63,7 +63,9 @@ jobs:
 
           See **Known quirks** in the README if something doesn't connect at first.
 
-          Check your car first on the [compatibility page](https://vyssecodes.github.io/HMG-Leafia-Plus/). Something wrong? Run **leafia-kit-$GITHUB_REF_NAME.zip** and open an issue with the problem form. (Other kit sizes: **quick** to check a car, **port** to add a new car, **full** for every crash record.) Uninstall any time from NEMESIS Manager; every file goes back to stock.
+          This build also keeps the CarPlay keyboard and phone keypad available while the car is in drive (wireless and wired). Tested only on a 2023 Hyundai Ioniq 5 (US, 260507); other cars carry the same package but not this change.
+
+          Something wrong? Run **leafia-kit-$GITHUB_REF_NAME.zip** and look at its \`LEAFIA/public\` folder; the \`private\` folder can hold identifiers, so don't post it. (Other kit sizes: **quick** to check a car, **port** to add a new car, **full** for every crash record.) Uninstall any time from NEMESIS Manager; every file goes back to stock.
 
           Verify downloads with \`sha256sum -c SHA256SUMS\`.
           EOF
