@@ -1,0 +1,117 @@
+name: Upstream sync
+
+# Looks for a new release tag in VysseCodes/HMG-Leafia-Plus and, when there is one,
+# merges it into a branch `upstream-sync/<tag>` and opens a pull request into this
+# fork's main. It never merges the pull request and never makes a release: new
+# patches go onto a car, so a person installs and tests them first, then merges and
+# tags. Nothing is ever sent to the upstream repository.
+#
+# If the merge conflicts, the run fails and lists the files. Our keyboard change
+# (tools/mkkeyboard.py) is in binary deltas that git cannot merge: when upstream
+# changes patches/<set>/HKMC_DiPO.*.lpd, take upstream's files and run mkkeyboard.py
+# again on the car's stock files, by hand.
+#
+# Optional secret SYNC_TOKEN (a token that can push workflows and open pull requests).
+# Without it the run uses the default token, which cannot push a branch that changes
+# .github/workflows, and a pull request it opens does not start CI.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge the newest upstream release
+    # only on a fork: never on the upstream repository itself
+    if: github.repository != 'VysseCodes/HMG-Leafia-Plus'
+    runs-on: ubuntu-24.04
+    env:
+      UPSTREAM: https://github.com/VysseCodes/HMG-Leafia-Plus.git
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+      # pull requests go to this repository only (gh would otherwise pick the parent of a fork)
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Find the newest upstream release
+        id: find
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --quiet --no-tags upstream 'refs/tags/v*:refs/tags/upstream/v*'
+          tag=$(git tag -l 'upstream/v*' --sort=-v:refname | head -n 1)
+          if [ -z "$tag" ]; then
+            echo "No upstream release tags found."
+            echo "todo=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          name=${tag#upstream/}
+          if git merge-base --is-ancestor "$tag" HEAD; then
+            echo "$name is already in main."
+            echo "todo=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "upstream-sync/$name" > /dev/null; then
+            echo "upstream-sync/$name already exists (pull request open or already handled)."
+            echo "todo=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "New upstream release: $name"
+          echo "todo=yes" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Merge it
+        if: steps.find.outputs.todo == 'yes'
+        env:
+          TAG: ${{ steps.find.outputs.tag }}
+          NAME: ${{ steps.find.outputs.name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "upstream-sync/$NAME"
+          if ! git merge --no-ff -m "Merge upstream $NAME" "$TAG"; then
+            echo "::error::Merging upstream $NAME conflicts. Conflicting files:"
+            git diff --name-only --diff-filter=U | sed 's/^/::error::  /'
+            echo "Merge it by hand. If patches/<set>/HKMC_DiPO.*.lpd conflicts, take upstream's files and run tools/mkkeyboard.py again on the car's stock files."
+            exit 1
+          fi
+          # compat.json's "built" lists come from the manifests
+          python3 tools/compat-built.py
+          if ! git diff --quiet; then
+            git commit -a -q -m "Refresh the compatibility page's build lists"
+          fi
+
+      - name: Open the pull request
+        if: steps.find.outputs.todo == 'yes'
+        env:
+          NAME: ${{ steps.find.outputs.name }}
+        run: |
+          git push origin "upstream-sync/$NAME"
+          {
+            echo "Upstream released **$NAME**. This merges it into main."
+            echo
+            echo "**Do not merge until it is tested on a car.** The package patches \`/system\` on the head unit."
+            echo
+            echo "Files changed in the merge, by area:"
+            echo
+            git diff --name-only main...HEAD | awk -F/ '{ if (NF == 1) a["(root)"]++; else a[$1 "/" ($1 == "patches" || $1 == "packages" ? $2 : "")]++ } END { for (k in a) print "- `" k "`: " a[k] }' | sort
+            echo
+            echo "After testing: merge this, then tag a release (\`git tag -a vX.Y.Z-kbd\`, push the tag)."
+          } > body.md
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "upstream-sync/$NAME" \
+            --title "Merge upstream $NAME" --body-file body.md
